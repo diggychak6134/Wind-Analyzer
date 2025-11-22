@@ -188,24 +188,3 @@ with col2:
     ).set_index("Wind speed (m/s)")
     st.line_chart(df_curve)
 
-st.markdown("---")
-st.subheader("Assumptions & Notes")
-
-st.write(
-    f"""
-- Air density is fixed at **{AIR_DENSITY} kg/m³** (sea-level standard).
-- Wind power density is computed as:  
-  \\( P_d = 0.5 \\rho V^3 \\).
-- Power curve is a **very simplified cubic ramp** between cut-in and rated speed,
-  then flat at rated power until cut-out.
-- Wind speed distribution is modeled as **Rayleigh** (Weibull with k = 2),
-  scaled to match the chosen mean wind speed.
-- Annual Energy Production (AEP) is calculated as expected power × 8760 hours.
-- Capacity factor = expected power / rated power.
-- This is a **basic framework**. You can later:
-  - Replace Rayleigh with full Weibull (k, c parameters),
-  - Use real turbine power curves from manufacturers,
-  - Add wake losses and wind farm layout,
-  - Load site-specific wind datasets instead of a single mean speed.
-"""
-)
