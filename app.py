@@ -231,7 +231,6 @@ st.write(
 - If **Weibull mode** is enabled, the site's k and c are used; otherwise, a Rayleigh-like distribution (k=2) is derived from mean speed.
 - AEP = ∑ P(v)·f(v)·Δv × 8760, where f(v) is the Weibull PDF.
 - Capacity factor = expected power / rated power.
-- To match your renewable dashboard dataset exactly, replace the `WIND_LOCATIONS` dict with values from your own data source.
 """
 )
 
