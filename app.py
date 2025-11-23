@@ -9,59 +9,106 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🌬️ Wind Energy Analyzer (Basic Version)")
+st.title("🌬️ Wind Energy Analyzer (Data-Driven Version)")
 st.write(
     "Estimate wind power density, turbine power curve, and annual energy production for a site. "
-    "Uses a simple Rayleigh wind distribution and an approximate power curve."
+    "Uses approximate but realistic wind speeds, Weibull parameters and a real-style turbine power curve."
 )
 
-# ---------------------------
-# 1. SIMPLE LOCATION DATABASE
-# ---------------------------
-# You can expand or replace with real wind datasets later.
+# ----------------------------------------------------
+# 1. LOCATION DATABASE – MEAN WIND & WEIBULL (approx)
+# ----------------------------------------------------
+# Typical-ish values at ~100m hub height, not exact.
 WIND_LOCATIONS = {
     "Kolkata, India": {
-        "avg_wind_ms": 3.5
+        "avg_wind_ms": 3.6,
+        "weibull_k": 1.7,
+        "weibull_c": 4.5,
+    },
+    "Chennai, India": {
+        "avg_wind_ms": 5.5,
+        "weibull_k": 2.0,
+        "weibull_c": 6.2,
     },
     "Hamburg, Germany": {
-        "avg_wind_ms": 5.5
+        "avg_wind_ms": 6.8,
+        "weibull_k": 2.3,
+        "weibull_c": 8.0,
     },
-    "Offshore North Sea": {
-        "avg_wind_ms": 8.5
+    "Schleswig-Holstein (coastal Germany)": {
+        "avg_wind_ms": 8.2,
+        "weibull_k": 2.0,
+        "weibull_c": 9.0,
     },
-    "Munich, Germany": {
-        "avg_wind_ms": 4.5
+    "Bavaria (South Germany)": {
+        "avg_wind_ms": 4.2,
+        "weibull_k": 1.8,
+        "weibull_c": 5.0,
     },
 }
 
-AIR_DENSITY = 1.225  # kg/m³, sea-level standard
+AIR_DENSITY = 1.225  # kg/m³ at sea level
 
-# ---------------------------
-# 2. SIDEBAR INPUTS
-# ---------------------------
+# ----------------------------------------------------
+# 2. REALISTIC TURBINE POWER CURVE (Vestas-like 2 MW)
+# ----------------------------------------------------
+# Wind speed (m/s) -> Power (kW)
+V90_POWER_CURVE = {
+    0: 0,
+    1: 0,
+    2: 0,
+    3: 50,
+    4: 120,
+    5: 250,
+    6: 480,
+    7: 750,
+    8: 1100,
+    9: 1500,
+    10: 1800,
+    11: 2000,
+    12: 2000,
+    13: 2000,
+    14: 2000,
+    15: 2000,
+    16: 2000,
+    17: 2000,
+    18: 2000,
+    19: 2000,
+    20: 2000,
+}
+
+def real_power_curve(v):
+    speeds = np.array(list(V90_POWER_CURVE.keys()), dtype=float)
+    powers = np.array(list(V90_POWER_CURVE.values()), dtype=float)
+    return float(np.interp(v, speeds, powers))
+
+# ----------------------------------------------------
+# 3. SIDEBAR INPUTS
+# ----------------------------------------------------
 st.sidebar.header("Inputs")
 
 location = st.sidebar.selectbox(
     "Location",
     options=list(WIND_LOCATIONS.keys()),
-    index=1
+    index=2
 )
+loc_data = WIND_LOCATIONS[location]
 
-default_v = WIND_LOCATIONS[location]["avg_wind_ms"]
 avg_wind_speed = st.sidebar.slider(
     "Average wind speed at hub height (m/s)",
     min_value=2.0,
     max_value=12.0,
-    value=float(default_v),
-    step=0.1
+    value=float(loc_data["avg_wind_ms"]),
+    step=0.1,
+    key=f"avg_wind_{location}"
 )
 
 rated_power_kw = st.sidebar.number_input(
     "Turbine rated power (kW)",
-    min_value=0.5,
+    min_value=100.0,
     max_value=5000.0,
-    value=2000.0,  # 2 MW baseline
-    step=0.5
+    value=2000.0,
+    step=50.0
 )
 
 rotor_diameter = st.sidebar.number_input(
@@ -80,14 +127,6 @@ cut_in = st.sidebar.slider(
     step=0.1
 )
 
-rated_speed = st.sidebar.slider(
-    "Rated speed (m/s)",
-    min_value=7.0,
-    max_value=15.0,
-    value=11.5,
-    step=0.1
-)
-
 cut_out = st.sidebar.slider(
     "Cut-out speed (m/s)",
     min_value=15.0,
@@ -96,95 +135,104 @@ cut_out = st.sidebar.slider(
     step=0.5
 )
 
-cp_max = st.sidebar.slider(
-    "Approx. maximum Cp (power coefficient)",
-    min_value=0.25,
-    max_value=0.50,
-    value=0.40,
-    step=0.01
+use_weibull = st.sidebar.checkbox(
+    "Use location Weibull parameters (k, c) instead of deriving from mean",
+    value=True
 )
 
-# ---------------------------
-# 3. BASIC CALCULATIONS
-# ---------------------------
-# 3.1 Wind power density at average speed
+# ----------------------------------------------------
+# 4. WIND POWER DENSITY & SWEPT AREA
+# ----------------------------------------------------
 wind_power_density = 0.5 * AIR_DENSITY * avg_wind_speed**3  # W/m²
-
-# Swept area
 swept_area = math.pi * (rotor_diameter / 2.0) ** 2  # m²
 
-# ---------------------------
-# 3.2 Approximate power curve (deterministic)
-# ---------------------------
-def power_curve(v, cut_in, rated_speed, cut_out, rated_power_kw):
-    """Very simple piecewise power curve in kW."""
-    if v < cut_in or v >= cut_out:
-        return 0.0
-    elif v >= rated_speed:
-        return rated_power_kw
-    else:
-        # Between cut-in and rated: cubic ramp scaled to match rated at v_rated
-        # P ~ (v - v_ci)^3 / (v_rated - v_ci)^3
-        return rated_power_kw * ((v - cut_in) / (rated_speed - cut_in)) ** 3
-
-# Discretize wind speeds for curve and AEP integration
+# ----------------------------------------------------
+# 5. POWER CURVE & DISTRIBUTION
+# ----------------------------------------------------
 v_values = np.arange(0.0, 30.1, 0.5)
-power_values = np.array([power_curve(v, cut_in, rated_speed, cut_out, rated_power_kw)
-                         for v in v_values])
 
-# ---------------------------
-# 3.3 Rayleigh wind distribution for given mean speed
-# ---------------------------
-# Rayleigh is a special case of Weibull with k = 2.
-# Mean wind speed V_mean = c * sqrt(pi/2) => c = V_mean * sqrt(2/pi)
-c_scale = avg_wind_speed * math.sqrt(2.0 / math.pi)
+# Turbine power curve (kW) – scaled if user changes rated_power from base curve
+base_rated = max(V90_POWER_CURVE.values())
+scale_factor = rated_power_kw / base_rated if base_rated > 0 else 1.0
+power_values = np.array([real_power_curve(v) * scale_factor for v in v_values])
 
-def rayleigh_pdf(v, c):
-    """Rayleigh PDF for wind speeds."""
-    return (v / c**2) * np.exp(- (v**2) / (2 * c**2))
+# Weibull parameters
+if use_weibull:
+    k = loc_data["weibull_k"]
+    c = loc_data["weibull_c"]
+else:
+    # Derive c from mean speed for Rayleigh-like approx (k=2)
+    k = 2.0
+    c = avg_wind_speed * math.sqrt(2.0 / math.pi)
 
-pdf_values = rayleigh_pdf(v_values, c_scale)
+def weibull_pdf(v, k, c):
+    v = np.array(v, dtype=float)
+    return (k / c) * (v / c) ** (k - 1) * np.exp(-(v / c) ** k)
 
-# Normalize (small numeric correction so sum(pdf*dv) ≈ 1)
+pdf_values = weibull_pdf(v_values, k, c)
 dv = v_values[1] - v_values[0]
 normalization = np.sum(pdf_values * dv)
-pdf_values = pdf_values / normalization
+if normalization > 0:
+    pdf_values = pdf_values / normalization
 
-# Expected AEP (kWh/year) = sum over v [ P(v) * Prob(v) ] * 8760
+# Expected power & AEP
 expected_power_kw = np.sum(power_values * pdf_values * dv)
 aep_kwh = expected_power_kw * 8760.0
-
 capacity_factor = (expected_power_kw / rated_power_kw) if rated_power_kw > 0 else 0.0
 
-# ---------------------------
-# 4. OUTPUTS
-# ---------------------------
+# For a second plot: contribution per speed bin (kW * probability)
+contribution_kw = power_values * pdf_values
+
+# ----------------------------------------------------
+# 6. OUTPUTS
+# ----------------------------------------------------
 col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("Key Results")
 
-    st.metric(
-        "Average wind speed",
-        f"{avg_wind_speed:.2f} m/s"
-    )
-    st.metric(
-        "Wind power density",
-        f"{wind_power_density:.0f} W/m²"
-    )
-    st.metric(
-        "Expected annual energy (AEP)",
-        f"{aep_kwh/1000:.1f} MWh/year"
-    )
-    st.metric(
-        "Capacity factor",
-        f"{capacity_factor*100:.1f} %"
-    )
+    st.metric("Location", location)
+    st.metric("Average wind speed", f"{avg_wind_speed:.2f} m/s")
+    st.metric("Wind power density", f"{wind_power_density:.0f} W/m²")
+    st.metric("Expected annual energy (AEP)", f"{aep_kwh/1000:.1f} MWh/year")
+    st.metric("Capacity factor", f"{capacity_factor*100:.1f} %")
 
 with col2:
-    st.subheader("Power Curve (deterministic)")
+    st.subheader("Turbine Power Curve (deterministic)")
     df_curve = pd.DataFrame(
         {"Wind speed (m/s)": v_values, "Power (kW)": power_values}
     ).set_index("Wind speed (m/s)")
     st.line_chart(df_curve)
+
+st.markdown("### Wind Speed Distribution & Contribution")
+
+col3, col4 = st.columns(2)
+
+with col3:
+    st.subheader("Wind Speed Distribution (Weibull PDF)")
+    df_pdf = pd.DataFrame(
+        {"Wind speed (m/s)": v_values, "Probability density": pdf_values}
+    ).set_index("Wind speed (m/s)")
+    st.line_chart(df_pdf)
+
+with col4:
+    st.subheader("Expected Power Contribution by Wind Speed")
+    df_contrib = pd.DataFrame(
+        {"Wind speed (m/s)": v_values, "Contribution (kW * prob)": contribution_kw}
+    ).set_index("Wind speed (m/s)")
+    st.line_chart(df_contrib)
+
+st.markdown("---")
+st.subheader("Assumptions & Notes")
+st.write(
+    """
+- Location wind data (mean wind speed, Weibull k & c) are approximate typical values, not exact measurements.
+- Turbine power curve is based on a generic 2 MW turbine and scaled by `rated_power_kw`.
+- If **Weibull mode** is enabled, the site's k and c are used; otherwise, a Rayleigh-like distribution (k=2) is derived from mean speed.
+- AEP = ∑ P(v)·f(v)·Δv × 8760, where f(v) is the Weibull PDF.
+- Capacity factor = expected power / rated power.
+- To match your renewable dashboard dataset exactly, replace the `WIND_LOCATIONS` dict with values from your own data source.
+"""
+)
+
 
